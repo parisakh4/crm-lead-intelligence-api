@@ -1,21 +1,22 @@
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
+from flask import Flask, request, jsonify
 from flask_migrate import Migrate
-from flask import request, jsonify
-from models import Company
+from flask_cors import CORS
+from models import Company, Contact, Opportunity
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
 
-# Database connection (replace with your password)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:1271778033Pp@localhost/crm_db'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 from extensions import db
 db.init_app(app)
 migrate = Migrate(app, db)
 app.extensions['migrate'].db = db
-
-import models
 
 
 @app.route('/')
@@ -27,6 +28,9 @@ def home():
 @app.route('/companies', methods=['POST'])
 def add_company():
     data = request.get_json()
+
+    if not data or not data.get('name'):
+        return jsonify({"error": "Company name is required"}), 400
 
     company = Company(
         name=data.get('name'),
@@ -72,10 +76,40 @@ def get_company(company_id):
         "email": company.email
     })
 
+# API endpoint to update a company
+@app.route('/companies/<int:company_id>', methods=['PUT'])
+def update_company(company_id):
+    company = Company.query.get_or_404(company_id)
+    data = request.get_json()
+
+    company.name = data.get('name', company.name)
+    company.industry = data.get('industry', company.industry)
+    company.location = data.get('location', company.location)
+    company.email = data.get('email', company.email)
+
+    db.session.commit()
+
+    return jsonify({"message": "Company updated"})
+
+# API endpoint to delete a company
+@app.route('/companies/<int:company_id>', methods=['DELETE'])
+def delete_company(company_id):
+    company = Company.query.get_or_404(company_id)
+
+    db.session.delete(company)
+    db.session.commit()
+
+    return jsonify({"message": "Company deleted"})
+
 # API endpoint to post a new contact
 @app.route('/contacts', methods=['POST'])
 def add_contact():
     data = request.get_json()
+
+    if not data or not data.get('name'):
+        return jsonify({"error": "Contact name is required"}), 400
+    if not data.get('company_id'):
+        return jsonify({"error": "company_id is required"}), 400
 
     contact = Contact(
         name=data.get('name'),
@@ -119,6 +153,31 @@ def get_contact(contact_id):
         "company_id": contact.company_id
     })
 
+# API endpoint to update a contact
+@app.route('/contacts/<int:contact_id>', methods=['PUT'])
+def update_contact(contact_id):
+    contact = Contact.query.get_or_404(contact_id)
+    data = request.get_json()
+
+    contact.name = data.get('name', contact.name)
+    contact.email = data.get('email', contact.email)
+    contact.phone = data.get('phone', contact.phone)
+    contact.company_id = data.get('company_id', contact.company_id)
+
+    db.session.commit()
+
+    return jsonify({"message": "Contact updated"})
+
+# API endpoint to delete a contact
+@app.route('/contacts/<int:contact_id>', methods=['DELETE'])
+def delete_contact(contact_id):
+    contact = Contact.query.get_or_404(contact_id)
+
+    db.session.delete(contact)
+    db.session.commit()
+
+    return jsonify({"message": "Contact deleted"})
+
 # API endpoint to get contacts from a specific company
 @app.route('/companies/<int:company_id>/contacts', methods=['GET'])
 def get_company_contacts(company_id):
@@ -142,6 +201,13 @@ def get_company_contacts(company_id):
 @app.route('/opportunities', methods=['POST'])
 def add_opportunity():
     data = request.get_json()
+
+    if not data or not data.get('name'):
+        return jsonify({"error": "Opportunity name is required"}), 400
+    if not data.get('stage'):
+        return jsonify({"error": "stage is required"}), 400
+    if not data.get('company_id'):
+        return jsonify({"error": "company_id is required"}), 400
 
     opportunity = Opportunity(
         name=data.get('name'),
@@ -202,9 +268,45 @@ def get_company_opportunities(company_id):
             "company_id": o.company_id
         })
 
-    return jsonify(result)  
+    return jsonify(result) 
 
 
+# API endpoint to update an opportunity
+@app.route('/opportunities/<int:opportunity_id>', methods=['PUT'])
+def update_opportunity(opportunity_id):
+    opportunity = Opportunity.query.get_or_404(opportunity_id)
+    data = request.get_json()
 
+    opportunity.name = data.get('name', opportunity.name)
+    opportunity.value = data.get('value', opportunity.value)
+    opportunity.stage = data.get('stage', opportunity.stage)
+    opportunity.company_id = data.get('company_id', opportunity.company_id)
+
+    db.session.commit()
+
+    return jsonify({"message": "Opportunity updated"})
+
+# API endpoint to delete an opportunity
+@app.route('/opportunities/<int:opportunity_id>', methods=['DELETE'])
+def delete_opportunity(opportunity_id):
+    opportunity = Opportunity.query.get_or_404(opportunity_id)
+
+    db.session.delete(opportunity)
+    db.session.commit()
+
+    return jsonify({"message": "Opportunity deleted"})
+ 
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Resource not found"}), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    return jsonify({"error": "Internal server error"}), 500
+
+
+# Run the app
 if __name__ == '__main__':
     app.run(debug=True)
