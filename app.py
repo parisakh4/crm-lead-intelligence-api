@@ -98,6 +98,17 @@ def get_json_body():
     return data if isinstance(data, dict) else None
 
 
+def parse_int_arg(name):
+    """Read an int query param. Returns (value, error); value is None if absent."""
+    raw = request.args.get(name)
+    if raw is None:
+        return None, None
+    try:
+        return int(raw), None
+    except ValueError:
+        return None, f"{name} must be an integer"
+
+
 @app.route('/')
 def home():
     return "App with db is running!"
@@ -263,7 +274,14 @@ def add_contact():
 # API endpoint to get all contacts
 @app.route('/contacts', methods=['GET'])
 def get_contacts():
-    contacts = Contact.query.all()
+    company_id, err = parse_int_arg('company_id')
+    if err:
+        return jsonify({"error": err}), 400
+
+    query = Contact.query
+    if company_id is not None:
+        query = query.filter_by(company_id=company_id)
+    contacts = query.all()
 
     result = []
     for c in contacts:
@@ -412,7 +430,20 @@ def add_opportunity():
 # API endpoint to get all opportunities
 @app.route('/opportunities', methods=['GET'])
 def get_opportunities():
-    opportunities = Opportunity.query.all()
+    company_id, err = parse_int_arg('company_id')
+    if err:
+        return jsonify({"error": err}), 400
+
+    stage = request.args.get('stage')
+    if stage is not None and stage not in STAGES:
+        return jsonify({"error": f"stage must be one of: {', '.join(STAGES)}"}), 400
+
+    query = Opportunity.query
+    if company_id is not None:
+        query = query.filter_by(company_id=company_id)
+    if stage is not None:
+        query = query.filter_by(stage=stage)
+    opportunities = query.all()
 
     result = []
     for o in opportunities:
