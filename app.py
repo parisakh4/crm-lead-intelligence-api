@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_migrate import Migrate
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from models import Company, Contact, Opportunity
 from dotenv import load_dotenv
 import os
@@ -18,6 +19,84 @@ db.init_app(app)
 migrate = Migrate(app, db)
 app.extensions['migrate'].db = db
 
+MAX_NAME_LEN = 100
+MAX_EMAIL_LEN = 100
+MAX_PHONE_LEN = 20
+MAX_INDUSTRY_LEN = 100
+MAX_LOCATION_LEN = 100
+STAGES = ["Wishlist", "Applied", "Phone Screen", "Interview", "Offer", "Rejected"]
+
+
+# -- Validation helpers -------------------------------------------------
+# Each helper returns (present, value, error):
+#   present: whether the field key was in the payload at all (PUT routes
+#            use this to decide whether to touch the existing value)
+#   value:   the cleaned value, or None if absent/blank/null
+#   error:   a message if the supplied value was invalid, else None
+# Blank strings and JSON null both normalize to value=None so optional
+# fields sent by the frontend as "" don't trip validation.
+
+def clean_str(data, field, max_length=None):
+    if field not in data:
+        return False, None, None
+    value = data.get(field)
+    if value is None:
+        return True, None, None
+    if not isinstance(value, str):
+        return True, None, f"{field} must be a string"
+    value = value.strip()
+    if not value:
+        return True, None, None
+    if max_length and len(value) > max_length:
+        return True, None, f"{field} must be {max_length} characters or fewer"
+    return True, value, None
+
+
+def clean_email(data, field='email'):
+    present, value, error = clean_str(data, field, max_length=MAX_EMAIL_LEN)
+    if error or value is None:
+        return present, value, error
+    if '@' not in value:
+        return present, None, f"{field} must be a valid email address"
+    return present, value, None
+
+
+def clean_stage(data, field='stage'):
+    present, value, error = clean_str(data, field)
+    if error or value is None:
+        return present, value, error
+    if value not in STAGES:
+        return present, None, f"{field} must be one of: {', '.join(STAGES)}"
+    return present, value, None
+
+
+def clean_int(data, field):
+    if field not in data:
+        return False, None, None
+    value = data.get(field)
+    if value is None:
+        return True, None, None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return True, None, f"{field} must be an integer"
+    return True, value, None
+
+
+def clean_number(data, field):
+    if field not in data:
+        return False, None, None
+    value = data.get(field)
+    if value is None:
+        return True, None, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return True, None, f"{field} must be a number"
+    return True, float(value), None
+
+
+def get_json_body():
+    """Parsed JSON dict, or None if the body is missing/malformed/not an object."""
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else None
+
 
 @app.route('/')
 def home():
@@ -27,17 +106,30 @@ def home():
 # API endpoint to create a new company
 @app.route('/companies', methods=['POST'])
 def add_company():
-    data = request.get_json()
+    data = get_json_body()
+    if data is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-    if not data or not data.get('name'):
-        return jsonify({"error": "Company name is required"}), 400
+    errors = []
+    _, name, err = clean_str(data, 'name', max_length=MAX_NAME_LEN)
+    if err:
+        errors.append(err)
+    elif not name:
+        errors.append("name is required")
+    _, industry, err = clean_str(data, 'industry', max_length=MAX_INDUSTRY_LEN)
+    if err:
+        errors.append(err)
+    _, location, err = clean_str(data, 'location', max_length=MAX_LOCATION_LEN)
+    if err:
+        errors.append(err)
+    _, email, err = clean_email(data)
+    if err:
+        errors.append(err)
 
-    company = Company(
-        name=data.get('name'),
-        industry=data.get('industry'),
-        location=data.get('location'),
-        email=data.get('email')
-    )
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
+
+    company = Company(name=name, industry=industry, location=location, email=email)
 
     db.session.add(company)
     db.session.commit()
@@ -80,12 +172,37 @@ def get_company(company_id):
 @app.route('/companies/<int:company_id>', methods=['PUT'])
 def update_company(company_id):
     company = Company.query.get_or_404(company_id)
-    data = request.get_json()
+    data = get_json_body()
+    if data is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-    company.name = data.get('name', company.name)
-    company.industry = data.get('industry', company.industry)
-    company.location = data.get('location', company.location)
-    company.email = data.get('email', company.email)
+    errors = []
+    name_present, name, err = clean_str(data, 'name', max_length=MAX_NAME_LEN)
+    if err:
+        errors.append(err)
+    elif name_present and name is None:
+        errors.append("name cannot be empty")
+    industry_present, industry, err = clean_str(data, 'industry', max_length=MAX_INDUSTRY_LEN)
+    if err:
+        errors.append(err)
+    location_present, location, err = clean_str(data, 'location', max_length=MAX_LOCATION_LEN)
+    if err:
+        errors.append(err)
+    email_present, email, err = clean_email(data)
+    if err:
+        errors.append(err)
+
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
+
+    if name_present:
+        company.name = name
+    if industry_present:
+        company.industry = industry
+    if location_present:
+        company.location = location
+    if email_present:
+        company.email = email
 
     db.session.commit()
 
@@ -104,18 +221,38 @@ def delete_company(company_id):
 # API endpoint to post a new contact
 @app.route('/contacts', methods=['POST'])
 def add_contact():
-    data = request.get_json()
+    data = get_json_body()
+    if data is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-    if not data or not data.get('name'):
-        return jsonify({"error": "Contact name is required"}), 400
-    if not data.get('company_id'):
-        return jsonify({"error": "company_id is required"}), 400
+    errors = []
+    _, name, err = clean_str(data, 'name', max_length=MAX_NAME_LEN)
+    if err:
+        errors.append(err)
+    elif not name:
+        errors.append("name is required")
+    _, email, err = clean_email(data)
+    if err:
+        errors.append(err)
+    _, phone, err = clean_str(data, 'phone', max_length=MAX_PHONE_LEN)
+    if err:
+        errors.append(err)
+    _, company_id, err = clean_int(data, 'company_id')
+    if err:
+        errors.append(err)
+    elif company_id is None:
+        errors.append("company_id is required")
+    elif not Company.query.get(company_id):
+        errors.append("Company not found")
+
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
 
     contact = Contact(
-        name=data.get('name'),
-        email=data.get('email'),
-        phone=data.get('phone'),
-        company_id=data.get('company_id')
+        name=name,
+        email=email,
+        phone=phone,
+        company_id=company_id
     )
 
     db.session.add(contact)
@@ -157,12 +294,42 @@ def get_contact(contact_id):
 @app.route('/contacts/<int:contact_id>', methods=['PUT'])
 def update_contact(contact_id):
     contact = Contact.query.get_or_404(contact_id)
-    data = request.get_json()
+    data = get_json_body()
+    if data is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-    contact.name = data.get('name', contact.name)
-    contact.email = data.get('email', contact.email)
-    contact.phone = data.get('phone', contact.phone)
-    contact.company_id = data.get('company_id', contact.company_id)
+    errors = []
+    name_present, name, err = clean_str(data, 'name', max_length=MAX_NAME_LEN)
+    if err:
+        errors.append(err)
+    elif name_present and name is None:
+        errors.append("name cannot be empty")
+    email_present, email, err = clean_email(data)
+    if err:
+        errors.append(err)
+    phone_present, phone, err = clean_str(data, 'phone', max_length=MAX_PHONE_LEN)
+    if err:
+        errors.append(err)
+    company_id_present, company_id, err = clean_int(data, 'company_id')
+    if err:
+        errors.append(err)
+    elif company_id_present:
+        if company_id is None:
+            errors.append("company_id cannot be empty")
+        elif not Company.query.get(company_id):
+            errors.append("Company not found")
+
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
+
+    if name_present:
+        contact.name = name
+    if email_present:
+        contact.email = email
+    if phone_present:
+        contact.phone = phone
+    if company_id_present:
+        contact.company_id = company_id
 
     db.session.commit()
 
@@ -200,26 +367,46 @@ def get_company_contacts(company_id):
 # API endpoint to post a new opportunity
 @app.route('/opportunities', methods=['POST'])
 def add_opportunity():
-    data = request.get_json()
+    data = get_json_body()
+    if data is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-    if not data or not data.get('name'):
-        return jsonify({"error": "Opportunity name is required"}), 400
-    if not data.get('stage'):
-        return jsonify({"error": "stage is required"}), 400
-    if not data.get('company_id'):
-        return jsonify({"error": "company_id is required"}), 400
+    errors = []
+    _, name, err = clean_str(data, 'name', max_length=MAX_NAME_LEN)
+    if err:
+        errors.append(err)
+    elif not name:
+        errors.append("name is required")
+    _, stage, err = clean_stage(data)
+    if err:
+        errors.append(err)
+    elif not stage:
+        errors.append("stage is required")
+    _, value, err = clean_number(data, 'value')
+    if err:
+        errors.append(err)
+    _, company_id, err = clean_int(data, 'company_id')
+    if err:
+        errors.append(err)
+    elif company_id is None:
+        errors.append("company_id is required")
+    elif not Company.query.get(company_id):
+        errors.append("Company not found")
+
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
 
     opportunity = Opportunity(
-        name=data.get('name'),
-        value=data.get('value'),
-        stage=data.get('stage'),
-        company_id=data.get('company_id')
+        name=name,
+        value=value,
+        stage=stage,
+        company_id=company_id
     )
 
     db.session.add(opportunity)
     db.session.commit()
 
-    return jsonify({"message": "Opportunity created"}), 201 
+    return jsonify({"message": "Opportunity created"}), 201
 
 
 # API endpoint to get all opportunities
@@ -250,7 +437,7 @@ def get_opportunity(opportunity_id):
         "value": opportunity.value,
         "stage": opportunity.stage,
         "company_id": opportunity.company_id
-    })  
+    })
 
 # API endpoint to get opportunities from a specific company
 @app.route('/companies/<int:company_id>/opportunities', methods=['GET'])
@@ -268,19 +455,51 @@ def get_company_opportunities(company_id):
             "company_id": o.company_id
         })
 
-    return jsonify(result) 
+    return jsonify(result)
 
 
 # API endpoint to update an opportunity
 @app.route('/opportunities/<int:opportunity_id>', methods=['PUT'])
 def update_opportunity(opportunity_id):
     opportunity = Opportunity.query.get_or_404(opportunity_id)
-    data = request.get_json()
+    data = get_json_body()
+    if data is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-    opportunity.name = data.get('name', opportunity.name)
-    opportunity.value = data.get('value', opportunity.value)
-    opportunity.stage = data.get('stage', opportunity.stage)
-    opportunity.company_id = data.get('company_id', opportunity.company_id)
+    errors = []
+    name_present, name, err = clean_str(data, 'name', max_length=MAX_NAME_LEN)
+    if err:
+        errors.append(err)
+    elif name_present and name is None:
+        errors.append("name cannot be empty")
+    stage_present, stage, err = clean_stage(data)
+    if err:
+        errors.append(err)
+    elif stage_present and stage is None:
+        errors.append("stage cannot be empty")
+    value_present, value, err = clean_number(data, 'value')
+    if err:
+        errors.append(err)
+    company_id_present, company_id, err = clean_int(data, 'company_id')
+    if err:
+        errors.append(err)
+    elif company_id_present:
+        if company_id is None:
+            errors.append("company_id cannot be empty")
+        elif not Company.query.get(company_id):
+            errors.append("Company not found")
+
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
+
+    if name_present:
+        opportunity.name = name
+    if stage_present:
+        opportunity.stage = stage
+    if value_present:
+        opportunity.value = value
+    if company_id_present:
+        opportunity.company_id = company_id
 
     db.session.commit()
 
@@ -295,7 +514,7 @@ def delete_opportunity(opportunity_id):
     db.session.commit()
 
     return jsonify({"message": "Opportunity deleted"})
- 
+
 
 # Error handlers
 @app.errorhandler(404)
@@ -305,6 +524,10 @@ def not_found(e):
 @app.errorhandler(500)
 def server_error(e):
     return jsonify({"error": "Internal server error"}), 500
+
+@app.errorhandler(HTTPException)
+def handle_http_exception(e):
+    return jsonify({"error": e.description}), e.code
 
 
 # Run the app
