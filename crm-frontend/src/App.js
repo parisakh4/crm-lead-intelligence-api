@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import CompanyForm from "./CompanyForm";
 import ContactForm from "./ContactForm";
 import OpportunityForm from "./OpportunityForm";
+import AiJobSearch from "./AiJobSearch";
 
 const API = "http://127.0.0.1:5000";
 
@@ -117,6 +118,7 @@ function App() {
 
       {/* Opportunities */}
       <h2 className="h4 mb-3">Opportunities</h2>
+      <AiJobSearch onAdded={() => { loadOpportunities(); loadCompanies(); }} />
       <OpportunityForm companies={companies} onCreated={loadOpportunities} />
       <table className="table table-bordered table-hover mb-5">
         <thead className="table-dark">

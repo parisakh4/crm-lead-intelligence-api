@@ -3,6 +3,7 @@ from flask_migrate import Migrate
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 from models import Company, Contact, Opportunity
+from ai_job_search import search_jobs_with_claude, add_jobs_to_db
 from dotenv import load_dotenv
 import os
 
@@ -425,6 +426,43 @@ def add_opportunity():
     db.session.commit()
 
     return jsonify({"message": "Opportunity created"}), 201
+
+
+# API endpoint to AI-search for job postings and add them as opportunities
+@app.route('/opportunities/ai-search', methods=['POST'])
+def ai_search_opportunities():
+    data = get_json_body()
+    if data is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    _, query, err = clean_str(data, 'query', max_length=300)
+    if err:
+        return jsonify({"error": err}), 400
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+
+    _, limit, err = clean_int(data, 'limit')
+    if err:
+        return jsonify({"error": err}), 400
+    if limit is None:
+        limit = 5
+    if limit < 1 or limit > 10:
+        return jsonify({"error": "limit must be between 1 and 10"}), 400
+
+    try:
+        jobs = search_jobs_with_claude(query, limit)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        return jsonify({"error": f"AI search failed: {e}"}), 502
+
+    added, skipped = add_jobs_to_db(jobs)
+
+    return jsonify({
+        "added": added,
+        "skipped_duplicates": skipped,
+        "count_added": len(added),
+    }), 201
 
 
 # API endpoint to get all opportunities
